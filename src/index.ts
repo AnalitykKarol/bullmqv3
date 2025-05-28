@@ -3,17 +3,33 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { FastifyAdapter } from '@bull-board/fastify';
 import fastify, { FastifyInstance, FastifyRequest } from 'fastify';
 import { Server, IncomingMessage, ServerResponse } from 'http';
+import { QueueEvents } from 'bullmq';
 import { env } from './env';
 
 import { createQueue, setupQueueProcessor } from './queue';
 
 interface WebhookRequest {
-  Body: any; // JSON payload z webhook
+  Body: any;
+}
+
+interface AddJobQueryString {
+  id?: string;
+  email?: string;
 }
 
 const run = async () => {
   const webhookQueue = createQueue('WebhookQueue');
   await setupQueueProcessor(webhookQueue.name);
+
+  // Create QueueEvents for waitUntilFinished
+  const queueEvents = new QueueEvents('WebhookQueue', {
+    connection: {
+      host: env.REDISHOST,
+      port: env.REDISPORT,
+      username: env.REDISUSER,
+      password: env.REDISPASSWORD,
+    },
+  });
 
   const server: FastifyInstance<Server, IncomingMessage, ServerResponse> =
     fastify();
@@ -35,13 +51,12 @@ const run = async () => {
     async (req: FastifyRequest<WebhookRequest>, reply) => {
       try {
         const webhookData = req.body;
-
-        // Dodaj job z wysokim priorytetem (wyższa liczba = wyższy priorytet)
+        
         const job = await webhookQueue.add(
           'high-priority-webhook',
           webhookData,
           {
-            priority: 10, // Wysoki priorytet
+            priority: 10,
             attempts: 3,
             backoff: {
               type: 'exponential',
@@ -50,10 +65,9 @@ const run = async () => {
           }
         );
 
-        // Czekaj synchronicznie na zakończenie job
-        const result = await job.waitUntilFinished();
+        // Wait for job completion with QueueEvents
+        const result = await job.waitUntilFinished(queueEvents);
 
-        // Zwróć odpowiedź z n8n
         if (result.success) {
           reply.status(result.status || 200).send(result.data);
         } else {
@@ -61,8 +75,7 @@ const run = async () => {
         }
       } catch (error: any) {
         console.error('High priority webhook error:', error);
-
-        // Jeśli job nie powiódł się, zwróć błąd
+        
         if (error.message.includes('N8N Error')) {
           const match = error.message.match(/N8N Error (\d+): (.+)/);
           if (match) {
@@ -72,10 +85,10 @@ const run = async () => {
             return;
           }
         }
-
-        reply.status(500).send({
-          error: 'Internal server error',
-          message: error.message
+        
+        reply.status(500).send({ 
+          error: 'Internal server error', 
+          message: error.message 
         });
       }
     }
@@ -87,13 +100,12 @@ const run = async () => {
     async (req: FastifyRequest<WebhookRequest>, reply) => {
       try {
         const webhookData = req.body;
-
-        // Dodaj job z niskim priorytetem
+        
         const job = await webhookQueue.add(
           'low-priority-webhook',
           webhookData,
           {
-            priority: 1, // Niski priorytet
+            priority: 1,
             attempts: 3,
             backoff: {
               type: 'exponential',
@@ -102,10 +114,9 @@ const run = async () => {
           }
         );
 
-        // Czekaj synchronicznie na zakończenie job
-        const result = await job.waitUntilFinished();
+        // Wait for job completion with QueueEvents
+        const result = await job.waitUntilFinished(queueEvents);
 
-        // Zwróć odpowiedź z n8n
         if (result.success) {
           reply.status(result.status || 200).send(result.data);
         } else {
@@ -113,8 +124,7 @@ const run = async () => {
         }
       } catch (error: any) {
         console.error('Low priority webhook error:', error);
-
-        // Jeśli job nie powiódł się, zwróć błąd
+        
         if (error.message.includes('N8N Error')) {
           const match = error.message.match(/N8N Error (\d+): (.+)/);
           if (match) {
@@ -124,10 +134,10 @@ const run = async () => {
             return;
           }
         }
-
-        reply.status(500).send({
-          error: 'Internal server error',
-          message: error.message
+        
+        reply.status(500).send({ 
+          error: 'Internal server error', 
+          message: error.message 
         });
       }
     }
@@ -138,7 +148,7 @@ const run = async () => {
     reply.send({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Zachowaj stary endpoint dla kompatybilności
+  // Legacy endpoint for compatibility
   server.get(
     '/add-job',
     {
@@ -153,7 +163,7 @@ const run = async () => {
         },
       },
     },
-    async (req: FastifyRequest<{ Querystring: any }>, reply) => {
+    async (req: FastifyRequest<{ Querystring: AddJobQueryString }>, reply) => {
       if (!req.query?.email || !req.query?.id) {
         reply
           .status(400)
@@ -169,7 +179,7 @@ const run = async () => {
   );
 
   await server.listen({ port: env.PORT, host: '0.0.0.0' });
-
+  
   console.log(`🚀 Server is running on port ${env.PORT}`);
   console.log(`📊 Admin Dashboard: https://${env.RAILWAY_STATIC_URL}/admin`);
   console.log(`📥 High Priority Webhook: https://${env.RAILWAY_STATIC_URL}/webhook/high-priority`);
