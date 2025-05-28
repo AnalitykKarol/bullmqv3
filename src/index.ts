@@ -57,7 +57,7 @@ const run = async () => {
           webhookData,
           {
             priority: 10,
-            attempts: 3,
+            attempts: 1,
             backoff: {
               type: 'exponential',
               delay: 2000,
@@ -106,7 +106,7 @@ const run = async () => {
           webhookData,
           {
             priority: 1,
-            attempts: 3,
+            attempts: 1,
             backoff: {
               type: 'exponential',
               delay: 2000,
