@@ -61,7 +61,7 @@ export const setupQueueProcessor = async (queueName: string) => {
     },
     {
       connection,
-      concurrency: 10, // Obsługuj do 10 jobów jednocześnie
+      concurrency: 5, // Obsługuj do 10 jobów jednocześnie
     }
   );
 };
