@@ -66,66 +66,127 @@ const processWebhookJob = async (job: Job, queueType: 'HIGH' | 'LOW') => {
   }
 };
 
+interface SmartWorker {
+  worker: Worker;
+  currentQueue: 'HIGH' | 'LOW';
+  id: number;
+}
+
+let smartWorkers: SmartWorker[] = [];
+let highQueue: Queue;
+let lowQueue: Queue;
+
+const createWorkerForQueue = (queueName: string, queueType: 'HIGH' | 'LOW', workerId: number): Worker => {
+  const worker = new Worker(
+    queueName,
+    async (job: Job) => processWebhookJob(job, queueType),
+    {
+      connection: redisConnection,
+      concurrency: 1, // Każdy worker przetwarza 1 job jednocześnie
+    }
+  );
+
+  worker.on('completed', (job, result) => {
+    console.log(`✅ Worker ${workerId} (${queueType}) completed job ${job.id} (${job.name})`);
+  });
+
+  worker.on('failed', (job, err) => {
+    console.log(`❌ Worker ${workerId} (${queueType}) failed job ${job?.id} (${job?.name}):`, err.message);
+  });
+
+  worker.on('error', (err) => {
+    console.error(`🚨 Worker ${workerId} (${queueType}) error:`, err);
+  });
+
+  return worker;
+};
+
+const switchWorkerToQueue = async (smartWorker: SmartWorker, newQueueType: 'HIGH' | 'LOW') => {
+  if (smartWorker.currentQueue === newQueueType) return;
+
+  console.log(`🔄 Switching Worker ${smartWorker.id} from ${smartWorker.currentQueue} to ${newQueueType}`);
+
+  // Zatrzymaj obecny worker
+  await smartWorker.worker.close();
+
+  // Utwórz nowy worker dla innej kolejki
+  const queueName = newQueueType === 'HIGH' ? 'HighPriorityQueue' : 'LowPriorityQueue';
+  smartWorker.worker = createWorkerForQueue(queueName, newQueueType, smartWorker.id);
+  smartWorker.currentQueue = newQueueType;
+};
+
+const monitorAndRebalance = async () => {
+  try {
+    // Sprawdź ile jobów czeka w HIGH queue
+    const highWaitingJobs = await highQueue.getWaiting();
+    const highJobsCount = highWaitingJobs.length;
+
+    console.log(`📊 HIGH queue jobs waiting: ${highJobsCount}`);
+
+    // Logika przełączania:
+    // HIGH >= 5 jobów → wszystkie 5 workerów na HIGH
+    // HIGH = 0 jobów → wszystkie 5 workerów na LOW
+    // HIGH 1-4 joby → wszystkie 5 workerów na HIGH (priorytet)
+
+    let targetQueue: 'HIGH' | 'LOW';
+
+    if (highJobsCount >= 5) {
+      targetQueue = 'HIGH';
+      console.log(`🚀 HIGH overload (${highJobsCount} jobs) → All 5 workers to HIGH`);
+    } else if (highJobsCount === 0) {
+      targetQueue = 'LOW';
+      console.log(`🐌 HIGH empty → All 5 workers to LOW`);
+    } else {
+      targetQueue = 'HIGH';
+      console.log(`⚡ HIGH has ${highJobsCount} jobs → All 5 workers to HIGH (priority)`);
+    }
+
+    // Przełącz wszystkich workerów na target queue
+    const switchPromises = smartWorkers.map(worker =>
+      switchWorkerToQueue(worker, targetQueue)
+    );
+
+    await Promise.all(switchPromises);
+
+    const currentDistribution = smartWorkers.reduce((acc, w) => {
+      acc[w.currentQueue] = (acc[w.currentQueue] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    console.log(`👥 Current distribution: HIGH=${currentDistribution.HIGH || 0}, LOW=${currentDistribution.LOW || 0}`);
+
+  } catch (error) {
+    console.error('❌ Error in queue monitoring:', error);
+  }
+};
+
 export const setupSmartWorkers = async () => {
-  console.log('🚀 Setting up high-concurrency workers for maximum throughput...');
+  console.log('🧠 Setting up 5 intelligent switching workers...');
 
-  const workers: Worker[] = [];
+  highQueue = createHighPriorityQueue();
+  lowQueue = createLowPriorityQueue();
 
-  // HIGH Priority: 1 worker with concurrency 3 (can process 3 HIGH jobs simultaneously)
-  const highWorker = new Worker(
-    'HighPriorityQueue',
-    async (job: Job) => processWebhookJob(job, 'HIGH'),
-    {
-      connection: redisConnection,
-      concurrency: 2, // Process up to 3 HIGH priority jobs at once
-    }
-  );
+  // Utwórz 5 smart workerów - wszystkie startują na HIGH
+  for (let i = 0; i < 5; i++) {
+    const worker = createWorkerForQueue('HighPriorityQueue', 'HIGH', i + 1);
 
-  highWorker.on('completed', (job, result) => {
-    console.log(`✅ HIGH Worker completed job ${job.id} (${job.name})`);
-  });
+    smartWorkers.push({
+      worker,
+      currentQueue: 'HIGH',
+      id: i + 1,
+    });
+  }
 
-  highWorker.on('failed', (job, err) => {
-    console.log(`❌ HIGH Worker failed job ${job?.id} (${job?.name}):`, err.message);
-  });
+  console.log(`🎯 Created 5 smart workers (all starting on HIGH)`);
+  console.log(`🤖 Intelligence: HIGH ≥5 jobs → all HIGH, HIGH = 0 → all LOW`);
 
-  highWorker.on('error', (err) => {
-    console.error(`🚨 HIGH Worker error:`, err);
-  });
+  // Start monitoring every 3 seconds
+  setInterval(monitorAndRebalance, 3000);
 
-  workers.push(highWorker);
+  // Run initial rebalance
+  await monitorAndRebalance();
 
-  // LOW Priority: 1 worker with concurrency 2 (can process 2 LOW jobs simultaneously when HIGH is empty)
-  const lowWorker = new Worker(
-    'LowPriorityQueue',
-    async (job: Job) => processWebhookJob(job, 'LOW'),
-    {
-      connection: redisConnection,
-      concurrency: 3, // Process up to 2 LOW priority jobs at once
-    }
-  );
-
-  lowWorker.on('completed', (job, result) => {
-    console.log(`✅ LOW Worker completed job ${job.id} (${job.name})`);
-  });
-
-  lowWorker.on('failed', (job, err) => {
-    console.log(`❌ LOW Worker failed job ${job?.id} (${job?.name}):`, err.message);
-  });
-
-  lowWorker.on('error', (err) => {
-    console.error(`🚨 LOW Worker error:`, err);
-  });
-
-  workers.push(lowWorker);
-
-  console.log(`🎯 Created 2 high-concurrency workers:`);
-  console.log(`   • 1 HIGH priority worker (concurrency: 3) = up to 3 simultaneous HIGH jobs`);
-  console.log(`   • 1 LOW priority worker (concurrency: 2) = up to 2 simultaneous LOW jobs`);
-  console.log(`⚡ Total capacity: 3 HIGH + 2 LOW = 5 jobs simultaneously`);
-  console.log(`🚀 HIGH priority jobs always processed first, LOW only when HIGH queue is empty`);
-
-  return workers;
+  return smartWorkers.map(sw => sw.worker);
 };
 
 // Legacy functions
