@@ -77,7 +77,7 @@ export const setupSmartWorkers = async () => {
     async (job: Job) => processWebhookJob(job, 'HIGH'),
     {
       connection: redisConnection,
-      concurrency: 3, // Process up to 3 HIGH priority jobs at once
+      concurrency: 2, // Process up to 3 HIGH priority jobs at once
     }
   );
 
@@ -101,7 +101,7 @@ export const setupSmartWorkers = async () => {
     async (job: Job) => processWebhookJob(job, 'LOW'),
     {
       connection: redisConnection,
-      concurrency: 2, // Process up to 2 LOW priority jobs at once
+      concurrency: 3, // Process up to 2 LOW priority jobs at once
     }
   );
 
