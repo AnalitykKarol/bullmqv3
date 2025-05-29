@@ -11,9 +11,9 @@
     "watch": "tsc --watch"
   },
   "dependencies": {
-    "@bull-board/api": "^5.21.4",
-    "@bull-board/fastify": "^5.21.4",
-    "@bull-board/ui": "^5.21.4",
+    "@bull-board/api": "^6.9.6",
+    "@bull-board/fastify": "^6.9.6",
+    "@bull-board/ui": "^6.9.6",
     "axios": "^1.7.7",
     "bullmq": "^5.52.3",
     "envsafe": "^2.0.3",

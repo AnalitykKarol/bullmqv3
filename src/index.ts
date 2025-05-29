@@ -51,8 +51,10 @@ const run = async () => {
   const server: FastifyInstance<Server, IncomingMessage, ServerResponse> =
     fastify();
 
-  // Bull Board setup with both queues
+  // Bull Board setup with both queues (Updated for v6.9.6)
   const serverAdapter = new FastifyAdapter();
+  serverAdapter.setBasePath('/admin');
+
   createBullBoard({
     queues: [
       new BullMQAdapter(highPriorityQueue),
@@ -60,8 +62,8 @@ const run = async () => {
     ],
     serverAdapter,
   });
-  serverAdapter.setBasePath('/admin');
-  server.register(serverAdapter.registerPlugin(), {
+
+  await server.register(serverAdapter.registerPlugin(), {
     prefix: '/admin',
     basePath: '/admin',
   });
@@ -210,7 +212,7 @@ const run = async () => {
   console.log(`📥 High Priority Webhook: ${env.RAILWAY_STATIC_URL}/webhook/high-priority`);
   console.log(`📥 Low Priority Webhook: ${env.RAILWAY_STATIC_URL}/webhook/low-priority`);
   console.log(`❤️ Health Check: ${env.RAILWAY_STATIC_URL}/health`);
-  console.log(`🎯 5 Smart Workers: HIGH priority first, LOW when HIGH empty`);
+  console.log(`🎯 Smart Workers: HIGH priority first, LOW when HIGH empty`);
   console.log(`⚡ Maximum efficiency: all workers utilized dynamically`);
 };
 
