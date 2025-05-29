@@ -90,10 +90,6 @@ export const setupSmartWorkers = async () => {
       {
         connection: redisConnection,
         concurrency: 1,
-        settings: {
-          stalledInterval: 30 * 1000,
-          maxStalledCount: 1,
-        },
       }
     );
 
@@ -120,10 +116,6 @@ export const setupSmartWorkers = async () => {
       {
         connection: redisConnection,
         concurrency: 1,
-        settings: {
-          stalledInterval: 30 * 1000,
-          maxStalledCount: 1,
-        },
       }
     );
 
