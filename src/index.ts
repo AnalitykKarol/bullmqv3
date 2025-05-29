@@ -6,7 +6,11 @@ import { Server, IncomingMessage, ServerResponse } from 'http';
 import { QueueEvents } from 'bullmq';
 import { env } from './env';
 
-import { createQueue, setupQueueProcessor } from './queue';
+import {
+  createHighPriorityQueue,
+  createLowPriorityQueue,
+  setupSmartWorkers
+} from './queue';
 
 interface WebhookRequest {
   Body: any;
@@ -18,11 +22,24 @@ interface AddJobQueryString {
 }
 
 const run = async () => {
-  const webhookQueue = createQueue('WebhookQueue');
-  await setupQueueProcessor(webhookQueue.name);
+  // Create separate queues for different priorities
+  const highPriorityQueue = createHighPriorityQueue();
+  const lowPriorityQueue = createLowPriorityQueue();
 
-  // Create QueueEvents for waitUntilFinished
-  const queueEvents = new QueueEvents('WebhookQueue', {
+  // Setup smart workers that handle both queues with intelligent priority
+  await setupSmartWorkers();
+
+  // Create QueueEvents for both queues
+  const highPriorityQueueEvents = new QueueEvents('HighPriorityQueue', {
+    connection: {
+      host: env.REDISHOST,
+      port: env.REDISPORT,
+      username: env.REDISUSER,
+      password: env.REDISPASSWORD,
+    },
+  });
+
+  const lowPriorityQueueEvents = new QueueEvents('LowPriorityQueue', {
     connection: {
       host: env.REDISHOST,
       port: env.REDISPORT,
@@ -34,9 +51,13 @@ const run = async () => {
   const server: FastifyInstance<Server, IncomingMessage, ServerResponse> =
     fastify();
 
+  // Bull Board setup with both queues
   const serverAdapter = new FastifyAdapter();
   createBullBoard({
-    queues: [new BullMQAdapter(webhookQueue)],
+    queues: [
+      new BullMQAdapter(highPriorityQueue),
+      new BullMQAdapter(lowPriorityQueue)
+    ],
     serverAdapter,
   });
   serverAdapter.setBasePath('/admin');
@@ -50,14 +71,15 @@ const run = async () => {
     '/webhook/high-priority',
     async (req: FastifyRequest<WebhookRequest>, reply) => {
       try {
+        console.log('🚀 High priority webhook received:', req.body);
         const webhookData = req.body;
-        
-        const job = await webhookQueue.add(
+
+        // Add to HIGH priority queue
+        const job = await highPriorityQueue.add(
           'high-priority-webhook',
           webhookData,
           {
-            priority: 10,
-            attempts: 1,
+            attempts: 3,
             backoff: {
               type: 'exponential',
               delay: 2000,
@@ -65,8 +87,9 @@ const run = async () => {
           }
         );
 
-        // Wait for job completion with QueueEvents
-        const result = await job.waitUntilFinished(queueEvents);
+        console.log('⏳ Waiting for HIGH priority job completion...');
+        const result = await job.waitUntilFinished(highPriorityQueueEvents);
+        console.log('✅ HIGH priority job completed:', result);
 
         if (result.success) {
           reply.status(result.status || 200).send(result.data);
@@ -74,8 +97,8 @@ const run = async () => {
           reply.status(500).send({ error: 'Job failed', details: result });
         }
       } catch (error: any) {
-        console.error('High priority webhook error:', error);
-        
+        console.error('❌ High priority webhook error:', error);
+
         if (error.message.includes('N8N Error')) {
           const match = error.message.match(/N8N Error (\d+): (.+)/);
           if (match) {
@@ -85,10 +108,10 @@ const run = async () => {
             return;
           }
         }
-        
-        reply.status(500).send({ 
-          error: 'Internal server error', 
-          message: error.message 
+
+        reply.status(500).send({
+          error: 'Internal server error',
+          message: error.message
         });
       }
     }
@@ -99,14 +122,15 @@ const run = async () => {
     '/webhook/low-priority',
     async (req: FastifyRequest<WebhookRequest>, reply) => {
       try {
+        console.log('🐌 Low priority webhook received:', req.body);
         const webhookData = req.body;
-        
-        const job = await webhookQueue.add(
+
+        // Add to LOW priority queue
+        const job = await lowPriorityQueue.add(
           'low-priority-webhook',
           webhookData,
           {
-            priority: 1,
-            attempts: 1,
+            attempts: 3,
             backoff: {
               type: 'exponential',
               delay: 2000,
@@ -114,8 +138,9 @@ const run = async () => {
           }
         );
 
-        // Wait for job completion with QueueEvents
-        const result = await job.waitUntilFinished(queueEvents);
+        console.log('⏳ Waiting for LOW priority job completion...');
+        const result = await job.waitUntilFinished(lowPriorityQueueEvents);
+        console.log('✅ LOW priority job completed:', result);
 
         if (result.success) {
           reply.status(result.status || 200).send(result.data);
@@ -123,8 +148,8 @@ const run = async () => {
           reply.status(500).send({ error: 'Job failed', details: result });
         }
       } catch (error: any) {
-        console.error('Low priority webhook error:', error);
-        
+        console.error('❌ Low priority webhook error:', error);
+
         if (error.message.includes('N8N Error')) {
           const match = error.message.match(/N8N Error (\d+): (.+)/);
           if (match) {
@@ -134,10 +159,10 @@ const run = async () => {
             return;
           }
         }
-        
-        reply.status(500).send({ 
-          error: 'Internal server error', 
-          message: error.message 
+
+        reply.status(500).send({
+          error: 'Internal server error',
+          message: error.message
         });
       }
     }
@@ -148,7 +173,7 @@ const run = async () => {
     reply.send({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Legacy endpoint for compatibility
+  // Legacy endpoint for compatibility (uses high priority queue)
   server.get(
     '/add-job',
     {
@@ -172,19 +197,21 @@ const run = async () => {
       }
 
       const { email, id } = req.query;
-      await webhookQueue.add(`TestJob-${id}`, { email, id });
+      await highPriorityQueue.add(`TestJob-${id}`, { email, id });
 
       reply.send({ ok: true });
     }
   );
 
   await server.listen({ port: env.PORT, host: '0.0.0.0' });
-  
+
   console.log(`🚀 Server is running on port ${env.PORT}`);
-  console.log(`📊 Admin Dashboard: https://${env.RAILWAY_STATIC_URL}/admin`);
-  console.log(`📥 High Priority Webhook: https://${env.RAILWAY_STATIC_URL}/webhook/high-priority`);
-  console.log(`📥 Low Priority Webhook: https://${env.RAILWAY_STATIC_URL}/webhook/low-priority`);
-  console.log(`❤️ Health Check: https://${env.RAILWAY_STATIC_URL}/health`);
+  console.log(`📊 Admin Dashboard: ${env.RAILWAY_STATIC_URL}/admin`);
+  console.log(`📥 High Priority Webhook: ${env.RAILWAY_STATIC_URL}/webhook/high-priority`);
+  console.log(`📥 Low Priority Webhook: ${env.RAILWAY_STATIC_URL}/webhook/low-priority`);
+  console.log(`❤️ Health Check: ${env.RAILWAY_STATIC_URL}/health`);
+  console.log(`🎯 5 Smart Workers: HIGH priority first, LOW when HIGH empty`);
+  console.log(`⚡ Maximum efficiency: all workers utilized dynamically`);
 };
 
 run().catch((e) => {

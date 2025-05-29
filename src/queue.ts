@@ -1,67 +1,131 @@
-import { ConnectionOptions, Queue, QueueScheduler, Worker } from 'bullmq';
-import axios from 'axios';
+import { Queue, Worker, Job } from 'bullmq';
 import { env } from './env';
 
-const connection: ConnectionOptions = {
+const redisConnection = {
   host: env.REDISHOST,
   port: env.REDISPORT,
   username: env.REDISUSER,
   password: env.REDISPASSWORD,
 };
 
-export const createQueue = (name: string) => new Queue(name, { connection });
-
-export const setupQueueProcessor = async (queueName: string) => {
-  const queueScheduler = new QueueScheduler(queueName, {
-    connection,
-  });
-  await queueScheduler.waitUntilReady();
-
-  new Worker(
-    queueName,
-    async (job) => {
-      try {
-        await job.updateProgress(10);
-        await job.log(`Processing webhook job ${job.id} with priority: ${job.opts.priority}`);
-
-        // Przekaż dane do n8n endpoint
-        await job.updateProgress(50);
-        await job.log(`Sending data to n8n endpoint`);
-
-        const response = await axios.post(env.N8N_WEBHOOK_URL, job.data, {
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          timeout: 30000, // 30 sekund timeout
-        });
-
-        await job.updateProgress(90);
-        await job.log(`Received response from n8n`);
-
-        await job.updateProgress(100);
-        await job.log(`Job completed successfully`);
-
-        // Zwróć odpowiedź z n8n
-        return {
-          success: true,
-          data: response.data,
-          status: response.status,
-        };
-      } catch (error: any) {
-        await job.log(`Error processing job: ${error.message}`);
-
-        // Jeśli to błąd HTTP z n8n, zwróć szczegóły
-        if (error.response) {
-          throw new Error(`N8N Error ${error.response.status}: ${JSON.stringify(error.response.data)}`);
-        }
-
-        // Inne błędy
-        throw new Error(`Processing Error: ${error.message}`);
-      }
+// Create separate queues for different priorities
+export const createHighPriorityQueue = () => {
+  return new Queue('HighPriorityQueue', {
+    connection: redisConnection,
+    defaultJobOptions: {
+      removeOnComplete: 100,
+      removeOnFail: 50,
     },
-    {
-      connection,
-      concurrency: 5, // Obsługuj do 10 jobów jednocześnie
-    }
-  );
+  });
 };
+
+export const createLowPriorityQueue = () => {
+  return new Queue('LowPriorityQueue', {
+    connection: redisConnection,
+    defaultJobOptions: {
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    },
+  });
+};
+
+// Legacy function for backward compatibility
+export const createQueue = (name: string) => {
+  return createHighPriorityQueue();
+};
+
+const processWebhookJob = async (job: Job, queueType: 'HIGH' | 'LOW') => {
+  console.log(`🔄 Processing ${queueType} priority job: ${job.name} - ID: ${job.id}`);
+
+  try {
+    const webhookData = job.data;
+    console.log(`📦 ${queueType} priority job data:`, JSON.stringify(webhookData, null, 2));
+
+    // Call n8n webhook
+    const response = await fetch(env.N8N_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(webhookData),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ N8N webhook failed (${response.status}) for ${queueType} priority:`, errorText);
+
+      throw new Error(`N8N Error ${response.status}: ${errorText}`);
+    }
+
+    const result = await response.json();
+    console.log(`✅ ${queueType} priority job completed successfully: ${job.name}`);
+
+    return {
+      success: true,
+      status: response.status,
+      data: result,
+    };
+  } catch (error: any) {
+    console.error(`❌ ${queueType} priority job failed: ${job.name}`, error.message);
+
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+};
+
+export const setupSmartWorkers = async () => {
+  const workers: Worker[] = [];
+
+  // 🎯 Create 5 smart workers that handle BOTH queues
+  // Each worker will prioritize HIGH queue, but fall back to LOW queue when HIGH is empty
+  for (let i = 0; i < 5; i++) {
+    const worker = new Worker(
+      // 🚀 KEY: Worker obsługuje obie kolejki z priorytetem dla HIGH
+      ['HighPriorityQueue', 'LowPriorityQueue'],
+      async (job: Job) => {
+        // Determine queue type based on job queue name
+        const queueType = job.queueName === 'HighPriorityQueue' ? 'HIGH' : 'LOW';
+        return processWebhookJob(job, queueType);
+      },
+      {
+        connection: redisConnection,
+        concurrency: 1, // Each worker handles 1 job at a time
+        settings: {
+          stalledInterval: 30 * 1000,
+          maxStalledCount: 1,
+        },
+      }
+    );
+
+    worker.on('completed', (job, result) => {
+      const queueType = job.queueName === 'HighPriorityQueue' ? 'HIGH' : 'LOW';
+      console.log(`✅ Worker ${i+1} completed ${queueType} priority job ${job.id} (${job.name})`);
+    });
+
+    worker.on('failed', (job, err) => {
+      const queueType = job?.queueName === 'HighPriorityQueue' ? 'HIGH' : 'LOW';
+      console.log(`❌ Worker ${i+1} failed ${queueType} priority job ${job?.id} (${job?.name}):`, err.message);
+    });
+
+    worker.on('error', (err) => {
+      console.error(`🚨 Worker ${i+1} error:`, err);
+    });
+
+    workers.push(worker);
+  }
+
+  console.log(`🎯 Created ${workers.length} smart workers handling both priority queues`);
+  console.log(`📈 Logic: HIGH priority first, then LOW priority when HIGH is empty`);
+
+  return workers;
+};
+
+// Legacy functions for backward compatibility
+export const setupHighPriorityProcessor = setupSmartWorkers;
+export const setupLowPriorityProcessor = async () => {
+  // No-op since smart workers handle both
+  return null;
+};
+export const setupQueueProcessor = setupSmartWorkers;
