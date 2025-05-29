@@ -22,12 +22,16 @@ interface AddJobQueryString {
 }
 
 const run = async () => {
-  // Create separate queues for different priorities
+  // Create shared queue instances
   const highPriorityQueue = createHighPriorityQueue();
   const lowPriorityQueue = createLowPriorityQueue();
 
-  // Setup smart workers that handle both queues with intelligent priority
-  await setupSmartWorkers();
+  console.log('🚀 Created queue instances');
+
+  // Setup smart workers with the same queue instances
+  await setupSmartWorkers(highPriorityQueue, lowPriorityQueue);
+
+  console.log('🧠 Smart workers setup completed');
 
   // Create QueueEvents for both queues
   const highPriorityQueueEvents = new QueueEvents('HighPriorityQueue', {
@@ -76,7 +80,7 @@ const run = async () => {
         console.log('🚀 High priority webhook received:', req.body);
         const webhookData = req.body;
 
-        // Add to HIGH priority queue
+        // Add to HIGH priority queue (shared instance)
         const job = await highPriorityQueue.add(
           'high-priority-webhook',
           webhookData,
@@ -89,7 +93,9 @@ const run = async () => {
           }
         );
 
+        console.log(`✅ HIGH priority job added to queue: ${job.id}`);
         console.log('⏳ Waiting for HIGH priority job completion...');
+
         const result = await job.waitUntilFinished(highPriorityQueueEvents);
         console.log('✅ HIGH priority job completed:', result);
 
@@ -127,7 +133,7 @@ const run = async () => {
         console.log('🐌 Low priority webhook received:', req.body);
         const webhookData = req.body;
 
-        // Add to LOW priority queue
+        // Add to LOW priority queue (shared instance)
         const job = await lowPriorityQueue.add(
           'low-priority-webhook',
           webhookData,
@@ -140,7 +146,9 @@ const run = async () => {
           }
         );
 
+        console.log(`✅ LOW priority job added to queue: ${job.id}`);
         console.log('⏳ Waiting for LOW priority job completion...');
+
         const result = await job.waitUntilFinished(lowPriorityQueueEvents);
         console.log('✅ LOW priority job completed:', result);
 

@@ -116,6 +116,8 @@ const switchWorkerToQueue = async (smartWorker: SmartWorker, newQueueType: 'HIGH
 };
 
 const monitorAndRebalance = async () => {
+  console.log('🔍 MONITORING TICK - checking queues...');
+
   try {
     // VERIFICATION: Check if we still have exactly 5 workers
     if (smartWorkers.length !== 5) {
@@ -166,8 +168,12 @@ const monitorAndRebalance = async () => {
   }
 };
 
-export const setupSmartWorkers = async () => {
+export const setupSmartWorkers = async (
+  highPriorityQueue: Queue,
+  lowPriorityQueue: Queue
+) => {
   console.log('🧠 Setting up 5 intelligent switching workers...');
+  console.log('🔥 MONITORING SYSTEM STARTING...');
 
   // SAFETY: Close any existing workers first
   if (smartWorkers.length > 0) {
@@ -176,8 +182,11 @@ export const setupSmartWorkers = async () => {
     smartWorkers = [];
   }
 
-  highQueue = createHighPriorityQueue();
-  lowQueue = createLowPriorityQueue();
+  // Use the provided queue instances (SHARED with server)
+  highQueue = highPriorityQueue;
+  lowQueue = lowPriorityQueue;
+
+  console.log('✅ Using shared queue instances from server');
 
   // GUARANTEE: Create exactly 5 workers
   for (let i = 0; i < 5; i++) {
@@ -198,11 +207,14 @@ export const setupSmartWorkers = async () => {
   console.log(`🎯 Created exactly ${smartWorkers.length} smart workers (all starting on HIGH)`);
   console.log(`🤖 Intelligence: HIGH ≥5 jobs → all HIGH, HIGH = 0 → all LOW`);
 
+  console.log('⏰ MONITORING INTERVAL STARTED!');
   // Start monitoring every 3 seconds
   setInterval(monitorAndRebalance, 3000);
 
   // Run initial rebalance
   await monitorAndRebalance();
+
+  console.log('✅ Smart workers system fully operational!');
 
   return smartWorkers.map(sw => sw.worker);
 };
