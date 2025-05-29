@@ -117,11 +117,17 @@ const switchWorkerToQueue = async (smartWorker: SmartWorker, newQueueType: 'HIGH
 
 const monitorAndRebalance = async () => {
   try {
+    // VERIFICATION: Check if we still have exactly 5 workers
+    if (smartWorkers.length !== 5) {
+      console.error(`⚠️  WARNING: Expected 5 workers, but have ${smartWorkers.length}!`);
+      return;
+    }
+
     // Sprawdź ile jobów czeka w HIGH queue
     const highWaitingJobs = await highQueue.getWaiting();
     const highJobsCount = highWaitingJobs.length;
 
-    console.log(`📊 HIGH queue jobs waiting: ${highJobsCount}`);
+    console.log(`📊 HIGH queue jobs waiting: ${highJobsCount} | Active workers: ${smartWorkers.length}`);
 
     // Logika przełączania:
     // HIGH >= 5 jobów → wszystkie 5 workerów na HIGH
@@ -153,7 +159,7 @@ const monitorAndRebalance = async () => {
       return acc;
     }, {} as Record<string, number>);
 
-    console.log(`👥 Current distribution: HIGH=${currentDistribution.HIGH || 0}, LOW=${currentDistribution.LOW || 0}`);
+    console.log(`👥 Current distribution: HIGH=${currentDistribution.HIGH || 0}, LOW=${currentDistribution.LOW || 0}, Total=${smartWorkers.length}`);
 
   } catch (error) {
     console.error('❌ Error in queue monitoring:', error);
@@ -163,10 +169,17 @@ const monitorAndRebalance = async () => {
 export const setupSmartWorkers = async () => {
   console.log('🧠 Setting up 5 intelligent switching workers...');
 
+  // SAFETY: Close any existing workers first
+  if (smartWorkers.length > 0) {
+    console.log('🛑 Cleaning up existing workers...');
+    await Promise.all(smartWorkers.map(sw => sw.worker.close()));
+    smartWorkers = [];
+  }
+
   highQueue = createHighPriorityQueue();
   lowQueue = createLowPriorityQueue();
 
-  // Utwórz 5 smart workerów - wszystkie startują na HIGH
+  // GUARANTEE: Create exactly 5 workers
   for (let i = 0; i < 5; i++) {
     const worker = createWorkerForQueue('HighPriorityQueue', 'HIGH', i + 1);
 
@@ -177,7 +190,12 @@ export const setupSmartWorkers = async () => {
     });
   }
 
-  console.log(`🎯 Created 5 smart workers (all starting on HIGH)`);
+  // VERIFICATION: Ensure we have exactly 5 workers
+  if (smartWorkers.length !== 5) {
+    throw new Error(`❌ Expected 5 workers, but got ${smartWorkers.length}`);
+  }
+
+  console.log(`🎯 Created exactly ${smartWorkers.length} smart workers (all starting on HIGH)`);
   console.log(`🤖 Intelligence: HIGH ≥5 jobs → all HIGH, HIGH = 0 → all LOW`);
 
   // Start monitoring every 3 seconds
@@ -191,3 +209,25 @@ export const setupSmartWorkers = async () => {
 
 // Legacy functions
 export const createQueue = createHighPriorityQueue;
+
+// Graceful shutdown function
+export const shutdownWorkers = async () => {
+  console.log('🛑 Shutting down all workers...');
+
+  if (smartWorkers.length === 0) {
+    console.log('✅ No workers to shutdown');
+    return;
+  }
+
+  try {
+    await Promise.all(smartWorkers.map(sw => sw.worker.close()));
+    smartWorkers = [];
+    console.log('✅ All workers shut down successfully');
+  } catch (error) {
+    console.error('❌ Error during worker shutdown:', error);
+  }
+};
+
+// Auto cleanup on process termination
+process.on('SIGTERM', shutdownWorkers);
+process.on('SIGINT', shutdownWorkers);
