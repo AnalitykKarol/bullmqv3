@@ -75,23 +75,21 @@ const processWebhookJob = async (job: Job, queueType: 'HIGH' | 'LOW') => {
   }
 };
 
-export const setupSmartWorkers = async () => {
-  const workers: Worker[] = [];
+// Global state to track queue load and dynamically adjust workers
+let highPriorityWorkers: Worker[] = [];
+let lowPriorityWorkers: Worker[] = [];
 
-  // 🎯 Create 5 smart workers that handle BOTH queues
-  // Each worker will prioritize HIGH queue, but fall back to LOW queue when HIGH is empty
-  for (let i = 0; i < 5; i++) {
+export const setupSmartWorkers = async () => {
+  console.log('🚀 Setting up smart load-balanced workers...');
+
+  // Create HIGH priority workers (start with 3)
+  for (let i = 0; i < 3; i++) {
     const worker = new Worker(
-      // 🚀 KEY: Worker obsługuje obie kolejki z priorytetem dla HIGH
-      ['HighPriorityQueue', 'LowPriorityQueue'],
-      async (job: Job) => {
-        // Determine queue type based on job queue name
-        const queueType = job.queueName === 'HighPriorityQueue' ? 'HIGH' : 'LOW';
-        return processWebhookJob(job, queueType);
-      },
+      'HighPriorityQueue',
+      async (job: Job) => processWebhookJob(job, 'HIGH'),
       {
         connection: redisConnection,
-        concurrency: 1, // Each worker handles 1 job at a time
+        concurrency: 1,
         settings: {
           stalledInterval: 30 * 1000,
           maxStalledCount: 1,
@@ -100,24 +98,66 @@ export const setupSmartWorkers = async () => {
     );
 
     worker.on('completed', (job, result) => {
-      const queueType = job.queueName === 'HighPriorityQueue' ? 'HIGH' : 'LOW';
-      console.log(`✅ Worker ${i+1} completed ${queueType} priority job ${job.id} (${job.name})`);
+      console.log(`✅ HIGH Worker ${i+1} completed job ${job.id} (${job.name})`);
     });
 
     worker.on('failed', (job, err) => {
-      const queueType = job?.queueName === 'HighPriorityQueue' ? 'HIGH' : 'LOW';
-      console.log(`❌ Worker ${i+1} failed ${queueType} priority job ${job?.id} (${job?.name}):`, err.message);
+      console.log(`❌ HIGH Worker ${i+1} failed job ${job?.id} (${job?.name}):`, err.message);
     });
 
     worker.on('error', (err) => {
-      console.error(`🚨 Worker ${i+1} error:`, err);
+      console.error(`🚨 HIGH Worker ${i+1} error:`, err);
     });
 
-    workers.push(worker);
+    highPriorityWorkers.push(worker);
   }
 
-  console.log(`🎯 Created ${workers.length} smart workers handling both priority queues`);
-  console.log(`📈 Logic: HIGH priority first, then LOW priority when HIGH is empty`);
+  // Create LOW priority workers (start with 2)
+  for (let i = 0; i < 2; i++) {
+    const worker = new Worker(
+      'LowPriorityQueue',
+      async (job: Job) => processWebhookJob(job, 'LOW'),
+      {
+        connection: redisConnection,
+        concurrency: 1,
+        settings: {
+          stalledInterval: 30 * 1000,
+          maxStalledCount: 1,
+        },
+      }
+    );
+
+    worker.on('completed', (job, result) => {
+      console.log(`✅ LOW Worker ${i+1} completed job ${job.id} (${job.name})`);
+    });
+
+    worker.on('failed', (job, err) => {
+      console.log(`❌ LOW Worker ${i+1} failed job ${job?.id} (${job?.name}):`, err.message);
+    });
+
+    worker.on('error', (err) => {
+      console.error(`🚨 LOW Worker ${i+1} error:`, err);
+    });
+
+    lowPriorityWorkers.push(worker);
+  }
+
+  console.log(`🎯 Created ${highPriorityWorkers.length} HIGH priority workers`);
+  console.log(`🐌 Created ${lowPriorityWorkers.length} LOW priority workers`);
+  console.log(`⚡ Total: ${highPriorityWorkers.length + lowPriorityWorkers.length} workers active`);
+
+  return [...highPriorityWorkers, ...lowPriorityWorkers];
+};
+
+// Advanced version with dynamic scaling (for future implementation)
+export const setupDynamicWorkers = async () => {
+  console.log('🧠 Setting up dynamic worker scaling...');
+
+  // Start with balanced allocation
+  const workers = await setupSmartWorkers();
+
+  // TODO: Future enhancement - monitor queue sizes and dynamically reassign workers
+  // This could check queue.getWaiting() periodically and spawn/kill workers as needed
 
   return workers;
 };
