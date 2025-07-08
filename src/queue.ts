@@ -104,7 +104,6 @@ const createWorkerForQueue = (queueName: string, queueType: 'HIGH' | 'LOW', work
 const switchWorkerToQueue = async (smartWorker: SmartWorker, newQueueType: 'HIGH' | 'LOW') => {
   if (smartWorker.currentQueue === newQueueType) return;
 
-  console.log(`🔄 Switching Worker ${smartWorker.id} from ${smartWorker.currentQueue} to ${newQueueType}`);
 
   // Zatrzymaj obecny worker
   await smartWorker.worker.close();
@@ -129,7 +128,6 @@ const monitorAndRebalance = async () => {
     const highWaitingJobs = await highQueue.getWaiting();
     const highJobsCount = highWaitingJobs.length;
 
-    console.log(`📊 HIGH queue jobs waiting: ${highJobsCount} | Active workers: ${smartWorkers.length}`);
 
     // Logika przełączania:
     // HIGH >= 5 jobów → wszystkie 5 workerów na HIGH
@@ -143,7 +141,6 @@ const monitorAndRebalance = async () => {
       console.log(`🚀 HIGH overload (${highJobsCount} jobs) → All 5 workers to HIGH`);
     } else if (highJobsCount === 0) {
       targetQueue = 'LOW';
-      console.log(`🐌 HIGH empty → All 5 workers to LOW`);
     } else {
       targetQueue = 'HIGH';
       console.log(`⚡ HIGH has ${highJobsCount} jobs → All 5 workers to HIGH (priority)`);
