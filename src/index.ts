@@ -69,7 +69,6 @@ const run = async () => {
 
   await server.register(serverAdapter.registerPlugin(), {
     prefix: '/admin',
-    basePath: '/admin',
   });
 
   // High Priority Webhook Endpoint
