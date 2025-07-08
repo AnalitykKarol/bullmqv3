@@ -29,11 +29,8 @@ export const createLowPriorityQueue = () => {
 };
 
 const processWebhookJob = async (job: Job, queueType: 'HIGH' | 'LOW') => {
-  console.log(`🔄 Processing ${queueType} priority job: ${job.name} - ID: ${job.id}`);
-
   try {
     const webhookData = job.data;
-    console.log(`📦 ${queueType} priority job data:`, JSON.stringify(webhookData, null, 2));
 
     const response = await fetch(env.N8N_WEBHOOK_URL, {
       method: 'POST',
@@ -50,7 +47,6 @@ const processWebhookJob = async (job: Job, queueType: 'HIGH' | 'LOW') => {
     }
 
     const result = await response.json();
-    console.log(`✅ ${queueType} priority job completed successfully: ${job.name}`);
 
     return {
       success: true,
@@ -59,10 +55,7 @@ const processWebhookJob = async (job: Job, queueType: 'HIGH' | 'LOW') => {
     };
   } catch (error: any) {
     console.error(`❌ ${queueType} priority job failed: ${job.name}`, error.message);
-    return {
-      success: false,
-      error: error.message,
-    };
+    throw error; // Re-throw to let BullMQ handle retries
   }
 };
 
@@ -75,6 +68,7 @@ interface SmartWorker {
 let smartWorkers: SmartWorker[] = [];
 let highQueue: Queue;
 let lowQueue: Queue;
+let monitoringInterval: NodeJS.Timeout | null = null;
 
 const createWorkerForQueue = (queueName: string, queueType: 'HIGH' | 'LOW', workerId: number): Worker => {
   const worker = new Worker(
@@ -86,12 +80,8 @@ const createWorkerForQueue = (queueName: string, queueType: 'HIGH' | 'LOW', work
     }
   );
 
-  worker.on('completed', (job, result) => {
-    console.log(`✅ Worker ${workerId} (${queueType}) completed job ${job.id} (${job.name})`);
-  });
-
   worker.on('failed', (job, err) => {
-    console.log(`❌ Worker ${workerId} (${queueType}) failed job ${job?.id} (${job?.name}):`, err.message);
+    console.error(`❌ Worker ${workerId} (${queueType}) failed job ${job?.id} (${job?.name}):`, err.message);
   });
 
   worker.on('error', (err) => {
@@ -104,20 +94,21 @@ const createWorkerForQueue = (queueName: string, queueType: 'HIGH' | 'LOW', work
 const switchWorkerToQueue = async (smartWorker: SmartWorker, newQueueType: 'HIGH' | 'LOW') => {
   if (smartWorker.currentQueue === newQueueType) return;
 
-  console.log(`🔄 Switching Worker ${smartWorker.id} from ${smartWorker.currentQueue} to ${newQueueType}`);
+  try {
+    // Zatrzymaj obecny worker
+    await smartWorker.worker.close();
 
-  // Zatrzymaj obecny worker
-  await smartWorker.worker.close();
-
-  // Utwórz nowy worker dla innej kolejki
-  const queueName = newQueueType === 'HIGH' ? 'HighPriorityQueue' : 'LowPriorityQueue';
-  smartWorker.worker = createWorkerForQueue(queueName, newQueueType, smartWorker.id);
-  smartWorker.currentQueue = newQueueType;
+    // Utwórz nowy worker dla innej kolejki
+    const queueName = newQueueType === 'HIGH' ? 'HighPriorityQueue' : 'LowPriorityQueue';
+    smartWorker.worker = createWorkerForQueue(queueName, newQueueType, smartWorker.id);
+    smartWorker.currentQueue = newQueueType;
+  } catch (error) {
+    console.error(`❌ Error switching worker ${smartWorker.id}:`, error);
+    throw error;
+  }
 };
 
 const monitorAndRebalance = async () => {
-  console.log('🔍 MONITORING TICK - checking queues...');
-
   try {
     // VERIFICATION: Check if we still have exactly 5 workers
     if (smartWorkers.length !== 5) {
@@ -129,8 +120,6 @@ const monitorAndRebalance = async () => {
     const highWaitingJobs = await highQueue.getWaiting();
     const highJobsCount = highWaitingJobs.length;
 
-    console.log(`📊 HIGH queue jobs waiting: ${highJobsCount} | Active workers: ${smartWorkers.length}`);
-
     // Logika przełączania:
     // HIGH >= 5 jobów → wszystkie 5 workerów na HIGH
     // HIGH = 0 jobów → wszystkie 5 workerów na LOW
@@ -140,13 +129,10 @@ const monitorAndRebalance = async () => {
 
     if (highJobsCount >= 5) {
       targetQueue = 'HIGH';
-      console.log(`🚀 HIGH overload (${highJobsCount} jobs) → All 5 workers to HIGH`);
     } else if (highJobsCount === 0) {
       targetQueue = 'LOW';
-      console.log(`🐌 HIGH empty → All 5 workers to LOW`);
     } else {
       targetQueue = 'HIGH';
-      console.log(`⚡ HIGH has ${highJobsCount} jobs → All 5 workers to HIGH (priority)`);
     }
 
     // Przełącz wszystkich workerów na target queue
@@ -155,13 +141,6 @@ const monitorAndRebalance = async () => {
     );
 
     await Promise.all(switchPromises);
-
-    const currentDistribution = smartWorkers.reduce((acc, w) => {
-      acc[w.currentQueue] = (acc[w.currentQueue] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-
-    console.log(`👥 Current distribution: HIGH=${currentDistribution.HIGH || 0}, LOW=${currentDistribution.LOW || 0}, Total=${smartWorkers.length}`);
 
   } catch (error) {
     console.error('❌ Error in queue monitoring:', error);
@@ -172,21 +151,14 @@ export const setupSmartWorkers = async (
   highPriorityQueue: Queue,
   lowPriorityQueue: Queue
 ) => {
-  console.log('🧠 Setting up 5 intelligent switching workers...');
-  console.log('🔥 MONITORING SYSTEM STARTING...');
-
   // SAFETY: Close any existing workers first
   if (smartWorkers.length > 0) {
-    console.log('🛑 Cleaning up existing workers...');
-    await Promise.all(smartWorkers.map(sw => sw.worker.close()));
-    smartWorkers = [];
+    await shutdownWorkers();
   }
 
   // Use the provided queue instances (SHARED with server)
   highQueue = highPriorityQueue;
   lowQueue = lowPriorityQueue;
-
-  console.log('✅ Using shared queue instances from server');
 
   // GUARANTEE: Create exactly 5 workers
   for (let i = 0; i < 5; i++) {
@@ -204,17 +176,11 @@ export const setupSmartWorkers = async (
     throw new Error(`❌ Expected 5 workers, but got ${smartWorkers.length}`);
   }
 
-  console.log(`🎯 Created exactly ${smartWorkers.length} smart workers (all starting on HIGH)`);
-  console.log(`🤖 Intelligence: HIGH ≥5 jobs → all HIGH, HIGH = 0 → all LOW`);
-
-  console.log('⏰ MONITORING INTERVAL STARTED!');
   // Start monitoring every 3 seconds
-  setInterval(monitorAndRebalance, 3000);
+  monitoringInterval = setInterval(monitorAndRebalance, 3000);
 
   // Run initial rebalance
   await monitorAndRebalance();
-
-  console.log('✅ Smart workers system fully operational!');
 
   return smartWorkers.map(sw => sw.worker);
 };
@@ -224,22 +190,42 @@ export const createQueue = createHighPriorityQueue;
 
 // Graceful shutdown function
 export const shutdownWorkers = async () => {
-  console.log('🛑 Shutting down all workers...');
+  // Clear monitoring interval
+  if (monitoringInterval) {
+    clearInterval(monitoringInterval);
+    monitoringInterval = null;
+  }
 
   if (smartWorkers.length === 0) {
-    console.log('✅ No workers to shutdown');
     return;
   }
 
   try {
-    await Promise.all(smartWorkers.map(sw => sw.worker.close()));
+    // Close all workers gracefully
+    const shutdownPromises = smartWorkers.map(async (sw) => {
+      try {
+        await sw.worker.close();
+      } catch (error) {
+        console.error(`❌ Error shutting down worker ${sw.id}:`, error);
+      }
+    });
+
+    await Promise.all(shutdownPromises);
     smartWorkers = [];
-    console.log('✅ All workers shut down successfully');
   } catch (error) {
     console.error('❌ Error during worker shutdown:', error);
+    // Force clear the array even if some workers failed to close
+    smartWorkers = [];
   }
 };
 
 // Auto cleanup on process termination
-process.on('SIGTERM', shutdownWorkers);
-process.on('SIGINT', shutdownWorkers);
+process.on('SIGTERM', async () => {
+  await shutdownWorkers();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  await shutdownWorkers();
+  process.exit(0);
+});
